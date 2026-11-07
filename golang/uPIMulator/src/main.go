@@ -8,6 +8,7 @@ import (
 	"uPIMulator/src/compiler"
 	"uPIMulator/src/linker"
 	"uPIMulator/src/misc"
+	"uPIMulator/src/rvpim"
 	"uPIMulator/src/simulator"
 )
 
@@ -17,6 +18,8 @@ func main() {
 
 	if command_line_parser.IsArgSet("help") {
 		fmt.Printf("%s", command_line_parser.StringifyHelpMsgs())
+	} else if command_line_parser.StringParameter("rv_elf") != "" {
+		os.Exit(rvpim.Run(command_line_parser))
 	} else {
 		command_line_validator := new(misc.CommandLineValidator)
 		command_line_validator.Init(command_line_parser)
@@ -148,6 +151,24 @@ func InitCommandLineParser() *misc.CommandLineParser {
 		"3",
 		"write bandwidth per DPU per rank [bytes/cycle]",
 	)
+
+	// RV-PIM mode (src/rvpim): an RV32 core model replaces the DPU logic; the UPMEM
+	// compile/link/simulate flow is skipped.
+	command_line_parser.AddOption(misc.STRING, "rv_elf", "",
+		"RV-PIM mode: RV32 ELF run on every DPU")
+	command_line_parser.AddOption(misc.STRING, "rv_core", "baseline",
+		"RV-PIM: core model, baseline (RV32IM) or rv32f (RV32IMF)")
+	command_line_parser.AddOption(misc.STRING, "rv_mram_image", "",
+		"RV-PIM: MRAM image(s) loaded at MRAM offset 0, one shared or a comma-separated list with one per DPU")
+	command_line_parser.AddOption(misc.STRING, "rv_dump_mram", "",
+		"RV-PIM: comma-separated off:len:file MRAM ranges dumped after the run (file.dpuN with several DPUs)")
+	command_line_parser.AddOption(misc.STRING, "rv_stats", "",
+		"RV-PIM: cas_write_stats JSON file (file.dpuN with several DPUs)")
+	command_line_parser.AddOption(misc.STRING, "rv_signature", "",
+		"RV-PIM: begin/end_signature dump, as cas --signature (file.dpuN with several DPUs)")
+	command_line_parser.AddOption(misc.INT, "rv_max_cycles", "100000000000", "RV-PIM: core cycle limit")
+	command_line_parser.AddOption(misc.INT, "rv_lockstep", "0",
+		"RV-PIM: 1 syncs core and memory every cycle without fast-forward (reference for the event-driven loop)")
 
 	return command_line_parser
 }

@@ -2,7 +2,10 @@ package simulator
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"uPIMulator/src/core"
 	"uPIMulator/src/misc"
 	"uPIMulator/src/simulator/channel"
@@ -18,6 +21,8 @@ type Simulator struct {
 	execution              int
 
 	verbose int
+
+	dump_mram string
 }
 
 func (this *Simulator) Init(command_line_parser *misc.CommandLineParser) {
@@ -25,6 +30,7 @@ func (this *Simulator) Init(command_line_parser *misc.CommandLineParser) {
 	this.host.Init(command_line_parser)
 
 	this.verbose = int(command_line_parser.IntParameter("verbose"))
+	this.dump_mram = command_line_parser.StringParameter("dump_mram")
 
 	num_channels := int(command_line_parser.IntParameter("num_channels"))
 	this.channels = make([]*channel.Channel, 0)
@@ -109,4 +115,39 @@ func (this *Simulator) Dump() {
 	}
 
 	file_dumper.WriteLines(lines)
+}
+
+// DumpMram writes --dump_mram off:len:file ranges (relative to the MRAM heap pointer) of every
+// DPU, in unique DPU id order; with several DPUs DPU i goes to file.dpu<i>.
+func (this *Simulator) DumpMram() {
+	if this.dump_mram == "" {
+		return
+	}
+	base := this.host.Value("__sys_used_mram_end")
+	dpus := this.host.Dpus()
+	for _, spec := range strings.Split(this.dump_mram, ",") {
+		parts := strings.SplitN(spec, ":", 3)
+		if len(parts) != 3 {
+			panic(fmt.Errorf("--dump_mram %q: want off:len:file", spec))
+		}
+		off, err1 := strconv.ParseInt(parts[0], 0, 64)
+		size, err2 := strconv.ParseInt(parts[1], 0, 64)
+		if err1 != nil || err2 != nil {
+			panic(fmt.Errorf("--dump_mram %q: bad offset or length", spec))
+		}
+		for i, dpu_ := range dpus {
+			byte_stream := dpu_.Dma().TransferFromMram(base+off, size)
+			data := make([]byte, byte_stream.Size())
+			for j := range data {
+				data[j] = byte_stream.Get(j)
+			}
+			file := parts[2]
+			if len(dpus) > 1 {
+				file = fmt.Sprintf("%s.dpu%d", file, i)
+			}
+			if err := os.WriteFile(file, data, 0o644); err != nil {
+				panic(err)
+			}
+		}
+	}
 }

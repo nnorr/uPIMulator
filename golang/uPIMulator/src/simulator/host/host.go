@@ -219,6 +219,15 @@ func (this *Host) InitByteStream(path string) *encoding.ByteStream {
 	return byte_stream
 }
 
+// Value returns a linker symbol's value (values.txt), e.g. __sys_used_mram_end.
+func (this *Host) Value(name string) int64 {
+	value, found := this.values[name]
+	if !found {
+		panic(errors.New(name + " is not found"))
+	}
+	return value
+}
+
 func (this *Host) Fini() {
 }
 

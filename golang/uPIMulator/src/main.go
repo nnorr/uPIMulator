@@ -44,9 +44,13 @@ func main() {
 		options_file_dumper.Init(options_filepath)
 		options_file_dumper.WriteLines([]string{command_line_parser.StringifyOptions()})
 
-		compiler_ := new(compiler.Compiler)
-		compiler_.Init(command_line_parser)
-		compiler_.Compile()
+		// --skip_compile 1: benchmark/build and sdk/build under root_dirpath already hold the
+		// DPU assembly (compiled without docker), so the docker build is not run.
+		if command_line_parser.IntParameter("skip_compile") == 0 {
+			compiler_ := new(compiler.Compiler)
+			compiler_.Init(command_line_parser)
+			compiler_.Compile()
+		}
 
 		linker_ := new(linker.Linker)
 		linker_.Init(command_line_parser)
@@ -64,6 +68,7 @@ func main() {
 		}
 
 		simulator_.Dump()
+		simulator_.DumpMram()
 		simulator_.Fini()
 	}
 }
@@ -77,6 +82,12 @@ func InitCommandLineParser() *misc.CommandLineParser {
 	// level 1: level 0 + prints UPMEM instruction executed per each logic cycle
 	// level 2: level + prints UPMEM register file values per each logic cycle
 	command_line_parser.AddOption(misc.INT, "verbose", "0", "verbosity of the simulation")
+	command_line_parser.AddOption(misc.INT, "skip_compile", "0",
+		"1: use the DPU assembly already under root_dirpath instead of compiling in docker")
+	command_line_parser.AddOption(misc.STRING, "mram_image", "",
+		"--benchmark FILE: MRAM image(s) at the MRAM heap pointer, one shared or one per DPU (a.bin,b.bin,...)")
+	command_line_parser.AddOption(misc.STRING, "dump_mram", "",
+		"off:len:file[,...]: after the run, write MRAM [heap pointer + off, + len) of each DPU to file (file.dpuN with several DPUs)")
 
 	command_line_parser.AddOption(misc.INT, "num_simulation_threads", "16",
 		"number of simulation threads to launch")

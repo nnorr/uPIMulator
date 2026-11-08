@@ -345,9 +345,7 @@ func (this *Alu) Xor(operand1 int64, operand2 int64) int64 {
 	result_word := new(word.Word)
 	result_word.Init(mram_data_width)
 	for i := 0; i < mram_data_width; i++ {
-		if !word1.Bit(i) && word2.Bit(i) {
-			result_word.SetBit(i)
-		} else if word1.Bit(i) && word2.Bit(i) {
+		if word1.Bit(i) != word2.Bit(i) {
 			result_word.SetBit(i)
 		} else {
 			result_word.ClearBit(i)
@@ -374,9 +372,7 @@ func (this *Alu) Nxor(operand1 int64, operand2 int64) int64 {
 	result_word := new(word.Word)
 	result_word.Init(mram_data_width)
 	for i := 0; i < mram_data_width; i++ {
-		if !word1.Bit(i) && word2.Bit(i) {
-			result_word.ClearBit(i)
-		} else if word1.Bit(i) && word2.Bit(i) {
+		if word1.Bit(i) != word2.Bit(i) {
 			result_word.ClearBit(i)
 		} else {
 			result_word.SetBit(i)

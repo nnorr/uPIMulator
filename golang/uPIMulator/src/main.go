@@ -189,6 +189,8 @@ func InitCommandLineParser() *misc.CommandLineParser {
 	command_line_parser.AddOption(misc.INT, "rv_dist_engine", "0", "RV-PIM: 1 adds the DMA distance engine")
 	command_line_parser.AddOption(misc.INT, "rv_dist_lanes", "4", "RV-PIM: distance engine elements per cycle")
 	command_line_parser.AddOption(misc.INT, "rv_dist_lat", "4", "RV-PIM: distance engine cycles after its last element")
+	command_line_parser.AddOption(misc.INT, "rv_dist_insn", "0", "RV-PIM: 1 adds the custom-0 dist instruction")
+	command_line_parser.AddOption(misc.INT, "rv_dist_insn_bw", "4", "RV-PIM: dist instruction RAM bytes per cycle")
 
 	return command_line_parser
 }

@@ -277,6 +277,8 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	cfg.dist_engine = C.int(p.IntParameter("rv_dist_engine"))
 	cfg.dist_lanes = C.uint32_t(p.IntParameter("rv_dist_lanes"))
 	cfg.dist_latency = C.uint32_t(p.IntParameter("rv_dist_lat"))
+	cfg.dist_insn = C.int(p.IntParameter("rv_dist_insn"))
+	cfg.dist_insn_bw = C.uint32_t(p.IntParameter("rv_dist_insn_bw"))
 	c := C.cas_create(&cfg)
 	if c == nil {
 		return "", errors.New("cas_create failed")

@@ -268,6 +268,15 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	default:
 		return "", fmt.Errorf("--rv_core %q: baseline or rv32f", p.StringParameter("rv_core"))
 	}
+	// Design-space extensions of the core model (domain_specific_proc docs/dse.md); 0 = off.
+	cfg.psimd = C.int(p.IntParameter("rv_psimd"))
+	cfg.psimd_latency = C.uint32_t(p.IntParameter("rv_psimd_lat"))
+	cfg.vlen = C.uint32_t(p.IntParameter("rv_vlen"))
+	cfg.vec_dlen = C.uint32_t(p.IntParameter("rv_vec_dlen"))
+	cfg.vec_mem_bytes = C.uint32_t(p.IntParameter("rv_vec_mem"))
+	cfg.dist_engine = C.int(p.IntParameter("rv_dist_engine"))
+	cfg.dist_lanes = C.uint32_t(p.IntParameter("rv_dist_lanes"))
+	cfg.dist_latency = C.uint32_t(p.IntParameter("rv_dist_lat"))
 	c := C.cas_create(&cfg)
 	if c == nil {
 		return "", errors.New("cas_create failed")

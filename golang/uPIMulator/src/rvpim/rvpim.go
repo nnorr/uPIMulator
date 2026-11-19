@@ -72,6 +72,7 @@ type dpu struct {
 	issued   []*dma                    // popped from the core, waiting for their issue cycle
 	inputQ   []*dram.DmaCommand        // logic.Dma input_q
 	inflight map[*dram.DmaCommand]*dma // DmaCommand -> tag (instead of its DPU instruction)
+	trace    *os.File                  // RVPIM_TRACE
 	done     []bool                    // by tag
 	pending  int
 
@@ -115,7 +116,15 @@ func (d *dpu) pop() error {
 			m.cmd.InitReadFromMram(d.mramOffset+mram, int64(m.size))
 		}
 		d.inflight[m.cmd] = m
-		d.issued = append(d.issued, m)
+		if d.trace != nil {
+			fmt.Fprintf(d.trace, "D %d %d %d %d %t\n", m.tag, m.issue, mram, m.size, m.toMram)
+		}
+		// in issue order: the graph unit issues from a completion, behind the core's later commands
+		i := len(d.issued)
+		for i > 0 && d.issued[i-1].issue > m.issue {
+			i--
+		}
+		d.issued = append(d.issued[:i], append([]*dma{m}, d.issued[i:]...)...)
 		d.done = append(d.done, false)
 		d.pending++
 	}
@@ -124,7 +133,7 @@ func (d *dpu) pop() error {
 
 // step simulates logic cycle t in Dpu.Cycle() order.
 func (d *dpu) step() {
-	for len(d.issued) > 0 && d.issued[0].issue == d.t { // Logic.Cycle: DMA issue
+	for len(d.issued) > 0 && d.issued[0].issue <= d.t { // Logic.Cycle: DMA issue
 		d.inputQ = append(d.inputQ, d.issued[0].cmd)
 		d.issued = d.issued[1:]
 	}
@@ -155,6 +164,9 @@ func (d *dpu) complete(cmd *dram.DmaCommand) {
 		}
 	}
 	C.cas_dma_done(d.c, C.uint32_t(m.tag), C.uint64_t(d.t))
+	if err := d.pop(); err != nil { // the graph unit's next loads, issued from this completion
+		panic(err)
+	}
 	d.done[m.tag] = true
 	d.pending--
 	lat := d.t - m.issue
@@ -281,6 +293,14 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	cfg.dist_qload = C.uint32_t(p.IntParameter("rv_dist_qload"))
 	cfg.dist_insn = C.int(p.IntParameter("rv_dist_insn"))
 	cfg.dist_insn_bw = C.uint32_t(p.IntParameter("rv_dist_insn_bw"))
+	cfg.rocc = C.int(p.IntParameter("rv_rocc"))
+	cfg.graph = C.int(p.IntParameter("rv_graph"))
+	cfg.graph_push = C.uint32_t(p.IntParameter("rv_graph_push"))
+	cfg.graph_scan = C.uint32_t(p.IntParameter("rv_graph_scan"))
+	cfg.graph_visit = C.uint32_t(p.IntParameter("rv_graph_visit"))
+	if cfg.graph != 0 && cfg.rocc == 0 {
+		return "", errors.New("--rv_graph needs --rv_rocc")
+	}
 	c := C.cas_create(&cfg)
 	if c == nil {
 		return "", errors.New("cas_create failed")
@@ -301,6 +321,16 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 		ratio:      float64(p.IntParameter("memory_frequency")) / float64(p.IntParameter("logic_frequency")),
 		lockstep:   p.IntParameter("rv_lockstep") != 0,
 		inflight:   make(map[*dram.DmaCommand]*dma),
+	}
+	if f := os.Getenv("RVPIM_TRACE"); f != "" { // DMA commands (D tag issue mram size store) and activations (A t row)
+		tf, err := os.Create(f)
+		if err != nil {
+			return "", err
+		}
+		defer tf.Close()
+		d.trace = tf
+		dram.ActTrace = func(a int64) { fmt.Fprintf(tf, "A %d %d\n", d.t, a-d.mramOffset) }
+		defer func() { dram.ActTrace = nil }()
 	}
 	mram := new(dram.Mram)
 	mram.Init(p)
@@ -366,6 +396,8 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	fmt.Fprintf(&b, "  dma_bandwidth       %.1f MB/s (load+store bytes / core time)\n",
 		float64(d.bytes[0]+d.bytes[1])*mhz/float64(max(cycles, 1)))
 	fmt.Fprintf(&b, "  dma_blocked_cycles  %d (%.1f%%)\n", d.blocked, 100*float64(d.blocked)/float64(max(cycles, 1)))
+	rb := d.mc.RowBuffer().StatFactory()
+	fmt.Fprintf(&b, "  dram_rows           %d activations, %d precharges\n", rb.Value("num_activations"), rb.Value("num_precharges"))
 	if d.t > cycles {
 		fmt.Fprintf(&b, "  memory_drained_at   %d\n", d.t)
 	}

@@ -195,6 +195,12 @@ func InitCommandLineParser() *misc.CommandLineParser {
 	command_line_parser.AddOption(misc.INT, "rv_dist_insn_bw", "4", "RV-PIM: dist instruction RAM bytes per cycle")
 	command_line_parser.AddOption(misc.INT, "rv_rocc", "0", "RV-PIM: 1 runs the custom-0 core (engine commands are custom-0 instructions)")
 	command_line_parser.AddOption(misc.INT, "rv_graph", "0", "RV-PIM: 1 adds the graph unit (needs rv_rocc)")
+	command_line_parser.AddOption(misc.INT, "rv_graph_pf", "0",
+		"RV-PIM: graph unit next-block load: 0 off, 1 the queue's nearest at EXPAND, 2 the next node once known, 3 both")
+	command_line_parser.AddOption(misc.INT, "rv_mram_banks", "1",
+		"RV-PIM: MRAM banks, each with its own rows, row buffer and data path to the DMA engine")
+	command_line_parser.AddOption(misc.INT, "rv_mram_interleave", "0",
+		"RV-PIM: bytes in one bank before the next (rv_mram_banks > 1; 0: a row)")
 	command_line_parser.AddOption(misc.INT, "rv_graph_push", "6", "RV-PIM: graph unit cycles per heap insert")
 	command_line_parser.AddOption(misc.INT, "rv_graph_scan", "8", "RV-PIM: graph unit queue entries per cycle in a POP scan")
 	command_line_parser.AddOption(misc.INT, "rv_graph_visit", "1", "RV-PIM: graph unit cycles per visited test")

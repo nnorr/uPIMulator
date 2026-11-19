@@ -58,11 +58,18 @@ type dma struct {
 	toMram          bool
 	issue           int64
 	cmd             *dram.DmaCommand
+	mram            int64 // rv_mram_banks > 1: the MRAM address, the store's bytes, pieces in flight
+	data            []byte
+	left            int
 }
 
 type dpu struct {
 	c          *C.cas_t
-	mc         *dram.MemoryController
+	mc         *dram.MemoryController   // the MRAM's data: preload, dumps; with one bank also its timing
+	mcs        []*dram.MemoryController // rv_mram_banks > 1: timing only, each its own rows (bank-local addresses)
+	bankQ      [][]*dram.DmaCommand     // per bank: logic.Dma input_q
+	parts      map[*dram.DmaCommand]*dma
+	ilv        int64 // rv_mram_interleave: bytes per bank before the next
 	mramOffset int64
 	mramSize   int64
 	ratio      float64
@@ -70,7 +77,6 @@ type dpu struct {
 
 	t        int64                     // memory-side logic cycle; cycles [0, t) are done
 	issued   []*dma                    // popped from the core, waiting for their issue cycle
-	inputQ   []*dram.DmaCommand        // logic.Dma input_q
 	inflight map[*dram.DmaCommand]*dma // DmaCommand -> tag (instead of its DPU instruction)
 	trace    *os.File                  // RVPIM_TRACE
 	done     []bool                    // by tag
@@ -116,6 +122,12 @@ func (d *dpu) pop() error {
 			m.cmd.InitReadFromMram(d.mramOffset+mram, int64(m.size))
 		}
 		d.inflight[m.cmd] = m
+		if len(d.mcs) > 1 {
+			m.mram = d.mramOffset + mram
+			if m.toMram {
+				m.data = append([]byte(nil), buf...)
+			}
+		}
 		if d.trace != nil {
 			fmt.Fprintf(d.trace, "D %d %d %d %d %t\n", m.tag, m.issue, mram, m.size, m.toMram)
 		}
@@ -134,34 +146,115 @@ func (d *dpu) pop() error {
 // step simulates logic cycle t in Dpu.Cycle() order.
 func (d *dpu) step() {
 	for len(d.issued) > 0 && d.issued[0].issue <= d.t { // Logic.Cycle: DMA issue
-		d.inputQ = append(d.inputQ, d.issued[0].cmd)
+		if len(d.mcs) == 1 {
+			d.bankQ[0] = append(d.bankQ[0], d.issued[0].cmd)
+		} else {
+			d.split(d.issued[0])
+		}
 		d.issued = d.issued[1:]
 	}
-	if len(d.inputQ) > 0 && d.mc.CanPush() { // Dma.ServiceInputQ
-		d.mc.Push(d.inputQ[0])
-		d.inputQ = d.inputQ[1:]
-	}
-	if d.mc.CanPop() { // Dma.ServiceReadyQ: the load's data lands in WRAM this cycle
-		d.complete(d.mc.Pop())
+	for b, mc := range d.mcs {
+		if len(d.bankQ[b]) > 0 && mc.CanPush() { // Dma.ServiceInputQ
+			mc.Push(d.bankQ[b][0])
+			d.bankQ[b] = d.bankQ[b][1:]
+		}
+		if mc.CanPop() { // Dma.ServiceReadyQ: the load's data lands in WRAM this cycle
+			if cmd := mc.Pop(); len(d.mcs) == 1 {
+				d.complete(cmd)
+			} else {
+				d.piece(cmd)
+			}
+		}
 	}
 	n := int(d.ratio*float64(d.t) - d.ratio*float64(d.t-1)) // same expression as Dpu.Cycle()
 	for i := 0; i < n; i++ {
-		d.mc.Cycle()
+		for _, mc := range d.mcs {
+			mc.Cycle()
+		}
 	}
 	d.t++
+}
+
+// split (rv_mram_banks > 1) queues one piece of m per interleave unit it touches, to that unit's
+// bank at its bank-local address. The pieces only time the command; its data moves with the last.
+func (d *dpu) split(m *dma) {
+	delete(d.inflight, m.cmd)
+	nb := int64(len(d.mcs))
+	for off := int64(0); off < int64(m.size); {
+		r := m.mram + off - d.mramOffset
+		n := min(int64(m.size)-off, d.ilv-r%d.ilv)
+		local := d.mramOffset + r/(d.ilv*nb)*d.ilv + r%d.ilv
+		cmd := new(dram.DmaCommand)
+		if m.toMram {
+			bs := new(encoding.ByteStream)
+			bs.Init()
+			for i := int64(0); i < n; i++ {
+				bs.Append(0)
+			}
+			cmd.InitWriteToMram(local, n, bs)
+		} else {
+			cmd.InitReadFromMram(local, n)
+		}
+		d.parts[cmd] = m
+		b := r / d.ilv % nb
+		d.bankQ[b] = append(d.bankQ[b], cmd)
+		m.left++
+		off += n
+	}
+}
+
+// piece: a piece is done; with its command's last, the data moves (load to WRAM, store to MRAM).
+func (d *dpu) piece(cmd *dram.DmaCommand) {
+	m := d.parts[cmd]
+	delete(d.parts, cmd)
+	if m.left--; m.left > 0 {
+		return
+	}
+	if m.toMram {
+		bs := new(encoding.ByteStream)
+		bs.Init()
+		for _, b := range m.data {
+			bs.Append(b)
+		}
+		d.mc.Write(m.mram, int64(m.size), bs)
+	} else {
+		bs := d.mc.Read(m.mram, int64(m.size))
+		buf := d.ptr(m.wram, m.size)
+		for i := range buf {
+			buf[i] = bs.Get(i)
+		}
+	}
+	d.finish(m)
+}
+
+// idle: nothing queued or in any bank.
+func (d *dpu) idle() bool {
+	for b, mc := range d.mcs {
+		if len(d.bankQ[b]) > 0 || !mc.IsEmpty() {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *dpu) complete(cmd *dram.DmaCommand) {
 	m := d.inflight[cmd]
 	delete(d.inflight, cmd)
-	k := 1
 	if !m.toMram {
-		k = 0
 		bs := cmd.ByteStream(cmd.MramAddress(), cmd.Size())
 		buf := d.ptr(m.wram, m.size)
 		for i := range buf {
 			buf[i] = bs.Get(i)
 		}
+	}
+	d.finish(m)
+}
+
+// finish: m is done (its load data in WRAM): tell the core.
+func (d *dpu) finish(m *dma) {
+	k := 1
+	if !m.toMram {
+		k = 0
 	}
 	C.cas_dma_done(d.c, C.uint32_t(m.tag), C.uint64_t(d.t))
 	if err := d.pop(); err != nil { // the graph unit's next loads, issued from this completion
@@ -183,7 +276,7 @@ func (d *dpu) complete(cmd *dram.DmaCommand) {
 // Such stretches are skipped up to the next issue.
 func (d *dpu) advance(target int64) {
 	for d.t < target {
-		if !d.lockstep && len(d.inputQ) == 0 && d.mc.IsEmpty() {
+		if !d.lockstep && d.idle() {
 			d.t = target
 			if len(d.issued) > 0 {
 				d.t = min(target, d.issued[0].issue)
@@ -237,7 +330,7 @@ func (d *dpu) run(maxCycles uint64) error {
 			}
 			lastBlocked = now
 		case C.CAS_EXIT:
-			for d.pending > 0 || !d.mc.IsEmpty() { // stores still in flight reach MRAM
+			for d.pending > 0 || !d.idle() { // stores still in flight reach MRAM
 				d.step()
 			}
 			return nil
@@ -298,6 +391,7 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	cfg.graph_push = C.uint32_t(p.IntParameter("rv_graph_push"))
 	cfg.graph_scan = C.uint32_t(p.IntParameter("rv_graph_scan"))
 	cfg.graph_visit = C.uint32_t(p.IntParameter("rv_graph_visit"))
+	cfg.graph_pf = C.int(p.IntParameter("rv_graph_pf"))
 	if cfg.graph != 0 && cfg.rocc == 0 {
 		return "", errors.New("--rv_graph needs --rv_rocc")
 	}
@@ -334,9 +428,31 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	}
 	mram := new(dram.Mram)
 	mram.Init(p)
+	banks := p.IntParameter("rv_mram_banks")
+	if banks < 1 {
+		return "", fmt.Errorf("--rv_mram_banks %d", banks)
+	}
 	d.mc = new(dram.MemoryController)
 	d.mc.Init(0, 0, id, p)
 	d.mc.ConnectMram(mram)
+	d.mcs, d.bankQ, d.parts = []*dram.MemoryController{d.mc}, make([][]*dram.DmaCommand, banks), make(map[*dram.DmaCommand]*dma)
+	d.ilv = p.IntParameter("rv_mram_interleave")
+	if w := p.IntParameter("wordline_size"); d.ilv == 0 {
+		d.ilv = w
+	} else if d.ilv < 8 || d.ilv%8 != 0 || w%d.ilv != 0 {
+		return "", fmt.Errorf("--rv_mram_interleave %d: a multiple of 8 that divides the %d B row", d.ilv, w)
+	}
+	if banks > 1 {
+		shadow := new(dram.Mram) // the banks' row buffers read and write it; nothing reads it back
+		shadow.Init(p)
+		d.mcs = nil
+		for i := int64(0); i < banks; i++ {
+			mc := new(dram.MemoryController)
+			mc.Init(0, 0, id, p)
+			mc.ConnectMram(shadow)
+			d.mcs = append(d.mcs, mc)
+		}
+	}
 	if int64(len(image)) > d.mramSize {
 		return "", fmt.Errorf("MRAM image is %d B, MRAM is %d B", len(image), d.mramSize)
 	}
@@ -356,7 +472,9 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 		return "", err
 	}
 
-	d.mc.Flush() // write the open row back, as Dma.TransferFromMram does
+	for _, mc := range d.mcs {
+		mc.Flush() // write the open rows back, as Dma.TransferFromMram does
+	}
 	for _, x := range dumps {
 		if x.off < 0 || x.n < 0 || x.off+x.n > d.mramSize {
 			return "", fmt.Errorf("MRAM dump %d:%d out of range", x.off, x.n)
@@ -396,8 +514,15 @@ func simulate(id, n int, p *misc.CommandLineParser, image []byte, dumps []dump) 
 	fmt.Fprintf(&b, "  dma_bandwidth       %.1f MB/s (load+store bytes / core time)\n",
 		float64(d.bytes[0]+d.bytes[1])*mhz/float64(max(cycles, 1)))
 	fmt.Fprintf(&b, "  dma_blocked_cycles  %d (%.1f%%)\n", d.blocked, 100*float64(d.blocked)/float64(max(cycles, 1)))
-	rb := d.mc.RowBuffer().StatFactory()
-	fmt.Fprintf(&b, "  dram_rows           %d activations, %d precharges\n", rb.Value("num_activations"), rb.Value("num_precharges"))
+	var acts, pres int64
+	for _, mc := range d.mcs {
+		rb := mc.RowBuffer().StatFactory()
+		acts, pres = acts+rb.Value("num_activations"), pres+rb.Value("num_precharges")
+	}
+	fmt.Fprintf(&b, "  dram_rows           %d activations, %d precharges\n", acts, pres)
+	if len(d.mcs) > 1 {
+		fmt.Fprintf(&b, "  mram_banks          %d, interleaved every %d B\n", len(d.mcs), d.ilv)
+	}
 	if d.t > cycles {
 		fmt.Fprintf(&b, "  memory_drained_at   %d\n", d.t)
 	}

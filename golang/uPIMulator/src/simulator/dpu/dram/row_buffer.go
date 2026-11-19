@@ -201,6 +201,9 @@ func (this *RowBuffer) ServiceInputQ() {
 	}
 }
 
+// ActTrace, when set, gets the row address of every activation (rvpim RVPIM_TRACE).
+var ActTrace func(address int64)
+
 func (this *RowBuffer) ServiceActivationQ() {
 	if !this.activation_q.IsEmpty() {
 		memory_command, cycle := this.activation_q.Front(0)
@@ -226,6 +229,9 @@ func (this *RowBuffer) ServiceActivationQ() {
 		this.ready_q.Push(memory_command)
 
 		this.stat_factory.Increment("num_activations", 1)
+		if ActTrace != nil {
+			ActTrace(memory_command.Address())
+		}
 	}
 }
 

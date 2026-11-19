@@ -193,6 +193,11 @@ func InitCommandLineParser() *misc.CommandLineParser {
 	command_line_parser.AddOption(misc.INT, "rv_dist_qload", "0", "RV-PIM: distance engine query copy bytes per cycle (0: free)")
 	command_line_parser.AddOption(misc.INT, "rv_dist_insn", "0", "RV-PIM: 1 adds the custom-0 dist instruction")
 	command_line_parser.AddOption(misc.INT, "rv_dist_insn_bw", "4", "RV-PIM: dist instruction RAM bytes per cycle")
+	command_line_parser.AddOption(misc.INT, "rv_rocc", "0", "RV-PIM: 1 runs the custom-0 core (engine commands are custom-0 instructions)")
+	command_line_parser.AddOption(misc.INT, "rv_graph", "0", "RV-PIM: 1 adds the graph unit (needs rv_rocc)")
+	command_line_parser.AddOption(misc.INT, "rv_graph_push", "6", "RV-PIM: graph unit cycles per heap insert")
+	command_line_parser.AddOption(misc.INT, "rv_graph_scan", "8", "RV-PIM: graph unit queue entries per cycle in a POP scan")
+	command_line_parser.AddOption(misc.INT, "rv_graph_visit", "1", "RV-PIM: graph unit cycles per visited test")
 
 	return command_line_parser
 }
